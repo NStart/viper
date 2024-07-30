@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -408,5 +409,270 @@ func (v *Viper) isPathShadowedInDeepMap(path []string, m map[string]any) string 
 	}
 	return ""
 }
+
+func (v *Viper) isPathShadowedInFlatMap(path []string, mi any) string {
+	var m map[string]interface{}
+	switch miv := mi.(type) {
+	case map[string]string:
+		m = castMapStringToMapInterface(miv)
+	case map[string]FlagValue:
+		m = castMapFlagToMapInterface(miv)
+	default:
+		return ""
+	}
+
+	var parentKey string 
+	for i := 1; i < len(path); i++ {
+		parentKey = strings.Join(path[0:i], v.keyDelim)
+		if _, ok := m[parentKey]; ok {
+			return parentKey
+		}
+	}
+	return ""
+}
+
+func (v *Viper) isPathShadowedInAutoEnv(path []string) string {
+	var parentKey string 
+	for i := 1; i < len(path); i++ {
+		parentKey = strings.Join(path[0:i], v.keyDelim)
+		for _, ok := v.getEnv(v.mergeWithEnvPrefix(parentKey)); ok {
+			return parentKey
+		}
+	}
+	return ""
+}
+
+func SetTypeByDefaultValue(enable bool) { v.SetByDefaultValue(enable) }
+
+func (v *Viper) SetTypeByDefaultValue(enable bool) {
+	v.typeByDefValue = enable
+}
+
+func GetViper() *Viper {
+	return v
+}
+
+func (v *Viper) Get(key string) any {
+	lcaseKey := strings.ToLower(key)
+	val := v.find(lcaseKey, true)
+	if val == nil {
+		return nil
+	}
+
+	if v.typeByDefValue {
+		// TODO(bep) this branch isn't covered by a single test.
+		valType := val
+		path := strings.Split(lcaseKey, v.keyDelim)
+		defVal := v.searchMap(v.defaults, path)
+		if defVal != nil {
+			valType = defVal
+		}
+
+		switch valType.(type) {
+		case bool:
+			return cast.ToBool(val)
+		case string:
+			return cast.ToString(val)
+		case int32, int16, int8, int:
+			return cast.ToInt(val)
+		case uint:
+			return cast.ToUint(val)
+		case uint32:
+			return cast.ToUint32(val)
+		case uint64:
+			return cast.ToUint64(val)
+		case int64:
+			return cast.ToInt64(val)
+		case float64, float32:
+			return cast.ToFloat64(val)
+		case time.Time:
+			return cast.ToTime(val)
+		case time.Duration:
+			return cast.ToDuration(val)
+		case []string:
+			return cast.ToStringSlice(val)
+		case []int:
+			return cast.ToIntSlice(val)
+		case []time.Duration:
+			return cast.ToDurationSlice(val)
+		}
+	}
+
+	return val
+}
+
+func Sub(key string) *Viper { return v.Sub(key) }
+
+func (v *Viper) Sub(key string) *Viper {
+	subv := New()
+	data := v.Get(key)
+	if data == nil {
+		return nil
+	}
+
+	if reflect.TypeOf(data).Kind() == reflect.Map {
+		subv.parents = append([]string(nil), v.parents...)
+		subv.parents = append(subv.parents, strings.ToLower(key))
+		subv.automaticEnvApplied = v.automaticEnvApplied
+		subv.envPrefix = v.envPrefix
+		subv.endKeyReplacer = v.envKeyReplacer
+		subv.keyDelim = v.keyDelim
+		subv.config = cast.ToStringMap(data)
+		return subv
+	}
+	return nil
+}
+
+func GetString(key string) string { return v.GetString(key) }
+
+func (v *Viper) GetString(key string) string {
+	return cast.ToString(v.Get(key))
+}
+
+func GetBool(key string) bool { return v.GetBool(key) }
+
+func (v *Viper) GetBool(key string) bool {
+	return cast.GetBool(v.Get(key))
+}
+
+func GetInt(key string) int { return v.GetInt(key) }
+
+func (v *Viper) GetInt(key string) int {
+	return cast.ToInt(v.Get(key))
+}
+
+// GetInt32 returns the value associated with the key as an integer.
+func GetInt32(key string) int32 { return v.GetInt32(key) }
+
+func (v *Viper) GetInt32(key string) int32 {
+	return cast.ToInt32(v.Get(key))
+}
+
+// GetInt64 returns the value associated with the key as an integer.
+func GetInt64(key string) int64 { return v.GetInt64(key) }
+
+func (v *Viper) GetInt64(key string) int64 {
+	return cast.ToInt64(v.Get(key))
+}
+
+// GetUint returns the value associated with the key as an unsigned integer.
+func GetUint(key string) uint { return v.GetUint(key) }
+
+func (v *Viper) GetUint(key string) uint {
+	return cast.ToUint(v.Get(key))
+}
+
+// GetUint16 returns the value associated with the key as an unsigned integer.
+func GetUint16(key string) uint16 { return v.GetUint16(key) }
+
+func (v *Viper) GetUint16(key string) uint16 {
+	return cast.ToUint16(v.Get(key))
+}
+
+// GetUint32 returns the value associated with the key as an unsigned integer.
+func GetUint32(key string) uint32 { return v.GetUint32(key) }
+
+func (v *Viper) GetUint32(key string) uint32 {
+	return cast.ToUint32(v.Get(key))
+}
+
+// GetUint64 returns the value associated with the key as an unsigned integer.
+func GetUint64(key string) uint64 { return v.GetUint64(key) }
+
+func (v *Viper) GetUint64(key string) uint64 {
+	return cast.ToUint64(v.Get(key))
+}
+
+// GetFloat64 returns the value associated with the key as a float64.
+func GetFloat64(key string) float64 { return v.GetFloat64(key) }
+
+func (v *Viper) GetFloat64(key string) float64 {
+	return cast.ToFloat64(v.Get(key))
+}
+
+// GetTime returns the value associated with the key as time.
+func GetTime(key string) time.Time { return v.GetTime(key) }
+
+func (v *Viper) GetTime(key string) time.Time {
+	return cast.ToTime(v.Get(key))
+}
+
+// GetDuration returns the value associated with the key as a duration.
+func GetDuration(key string) time.Duration { return v.GetDuration(key) }
+
+func (v *Viper) GetDuration(key string) time.Duration {
+	return cast.ToDuration(v.Get(key))
+}
+
+// GetIntSlice returns the value associated with the key as a slice of int values.
+func GetIntSlice(key string) []int { return v.GetIntSlice(key) }
+
+func (v *Viper) GetIntSlice(key string) []int {
+	return cast.ToIntSlice(v.Get(key))
+}
+
+// GetStringSlice returns the value associated with the key as a slice of strings.
+func GetStringSlice(key string) []string { return v.GetStringSlice(key) }
+
+func (v *Viper) GetStringSlice(key string) []string {
+	return cast.ToStringSlice(v.Get(key))
+}
+
+// GetStringMap returns the value associated with the key as a map of interfaces.
+func GetStringMap(key string) map[string]any { return v.GetStringMap(key) }
+
+func (v *Viper) GetStringMap(key string) map[string]any {
+	return cast.ToStringMap(v.Get(key))
+}
+
+// GetStringMapString returns the value associated with the key as a map of strings.
+func GetStringMapString(key string) map[string]string { return v.GetStringMapString(key) }
+
+func (v *Viper) GetStringMapString(key string) map[string]string {
+	return cast.ToStringMapString(v.Get(key))
+}
+
+// GetStringMapStringSlice returns the value associated with the key as a map to a slice of strings.
+func GetStringMapStringSlice(key string) map[string][]string { return v.GetStringMapStringSlice(key) }
+
+func (v *Viper) GetStringMapStringSlice(key string) map[string][]string {
+	return cast.ToStringMapStringSlice(v.Get(key))
+}
+
+func GetSizeInBytes(key string) uint { return v.GetSizeInBytes(key) }
+
+func (v *Viper) GetSizeInBytes(key string) uint {
+	sizeStr := cast.ToString(v.Get(key))
+	return parseSizeInBytes(sizeStr)
+}
+
+func UnmarshalKey(key string, rawVal any, opts ...DecoderConfigOption) error {
+	return v.UnmarshalKey(key, rawVal, opts...)
+}
+
+func (v *Viper) UnmarshalKey(key string, rawVal any, opts ...DecoderConfigOption) error {
+	return decode(v.Get(key), v.defaultDecoderConfig(rawVal, opts...))
+}
+
+func Unmarshal(rawVal any, opts ...DecoderConfigOption) error {
+	return v.Unmarshal(rawVal, opts...)
+}
+
+func (v *Viper) Unmarshal(rawVal, any, opts ...DecoderConfigOption) error {
+	keys := v.AllKeys()
+
+	if v.experimentalBindStruct {
+		structKeys, err := v.decodeStructKeys(rawVal, opts...)
+		if err != nil {
+			return err
+		}
+
+		keys = append(keys, structKeys...)
+	}
+
+	return decode(v.getSettings(keys), v.defaultDecoderConfig(rawVal, opts...))
+}
+
+
 
 
