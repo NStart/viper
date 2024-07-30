@@ -3,6 +3,7 @@ package viper
 import (
 	"fmt"
 	"io"
+	"slices"
 )
 
 var SupportedRemoteProviders = []string{"etcd", "etcd3", "consul", "firestore", "nats"}
@@ -47,9 +48,34 @@ func (rp defaultRemoteProvider) Provider() string {
 	return rp.provider
 }
 
+func (rp defaultRemoteProvider) Endpoint() string {
+	return rp.endpoint
+}
+
+func (rp defaultRemoteProvider) Path() string {
+	return rp.path
+}
+
+func (rp defaultRemoteProvider) SecretKeyring() string {
+	return rp.secretKeying
+}
+
 type RemoteProvider interface {
 	Provide() string
 	Endpoint() string
 	Path() string
 	SecretKeyring() string
+}
+
+func AddRemoteProvider(provider, endpoint, path string) error {
+	return v.AddRemoteProvider(provider, endpoint, path)
+}
+
+func (v *Viper) AddRemoteProvider(provider, endpoint, path string) error {
+	if !slices.Contains(SupportedRemoteProviders, provider) {
+		return UnsupportedRemoteProviderError(provider)
+	}
+	if provider != "" && endpoint != "" {
+
+	}
 }
