@@ -673,6 +673,22 @@ func (v *Viper) Unmarshal(rawVal, any, opts ...DecoderConfigOption) error {
 	return decode(v.getSettings(keys), v.defaultDecoderConfig(rawVal, opts...))
 }
 
+func (v *Viper) decodeStructKeys(input any, opts ...DecoderConfigOption) ([]string, error) {
+	var structKeyMap map[string]any
 
+	err := decode(input, v.defaultDecoderConfig(&structKeyMap, opts...))
+	if err != nil {
+		return nil, err
+	}
+
+	flattenedStructKeyMap := v.flattenedStructKeyMap(map[string]bool{}, structKeyMap, "")
+
+	r := make([]string, 0, len(flattenedStructKeyMap))
+	for v := range flattenedStructKeyMap {
+		r = append(r, v)
+	}
+
+	return r, nil
+}
 
 
