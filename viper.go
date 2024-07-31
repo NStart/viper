@@ -1400,4 +1400,40 @@ func castMapFlagToMapInterface(src map[string]FlagValue) map[string]any {
 	return tgt
 }
 
+func mergeMaps(src, tgt map[string]any, itgt map[any]any) {
+	for sk, sv := range src {
+		tk := keyExists(SK, tgt)
+		if tk == "" {
+			v.logger.Debug("", "tk", "\"\"", fmt.Sprintf("tgt[%s]", sk), sv)
+			tgt[sk] = sv
+			if itgt != nil {
+				itgt[sk] = sv
+			}
+			continue
+		}
 
+		tv, ok := tgt[tk]
+		if !ok {
+			v.logger.Debug("", fmt.Sprintf("ok[%s]", tk), false, fmt.Sprintf("tgt[%s]", sk), sv)
+			tgt[sk] = sv
+			if itgt != nil {
+				itgt[sk] = sv
+			}
+			continue
+		}
+
+		svType := reflect.TypeOf(sv)
+		tvType := reflect.TypeOf(tv)
+
+		v.logger.Debug(
+			"processing",
+			"key", sk,
+			"st", svType,
+			"tt", tvType,
+			"sv", sv,
+			"tv", tv
+		)
+
+		
+	}
+}
