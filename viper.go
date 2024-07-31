@@ -1311,6 +1311,93 @@ func (v *Viper) writeConfig(filename string, force bool) error {
 	return f.Sync()
 }
 
+func (v *Viper) UnmarshalReader(in io.Reader, c map[string]any) error {
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(in)
 
+	format:= strings.ToLower(v.getConfigType())
+	if !slice.Contains(SupportedExts, format) {
+		return UnsupportedConfigError(format)
+	}
+
+	decoder, err := v.decoderRegistry.Decoder(format)
+	if err != nil {
+		return ConfigParseError{err}
+	}
+
+	err = decoder.Decode(buf.Bytes(), c)
+	if err != nil {
+		return ConfigParseError{err}
+	}
+
+	insensitiviseMap(c)
+	return nil
+}
+
+func (v *Viper) marshalWrite(w io.Write, configType string) error {
+	c := v.AllSettings()
+
+	encoder, err := v.encoderRegistry.Encoder(configType)
+	if err != nil {
+		return ConfigMarshalError{}
+	}
+
+	b, err := encoder.Encoder(c)
+	if err != nil {
+		return ConfigMarshalError{err}
+	}
+
+	_, err := w.Write(b)
+	if err != nil {
+		return ConfigMarshalError{err}
+	}
+
+	return nil
+}
+
+func keyExists(k string, m map[string]any) string {
+	lk := strings.ToLower(k)
+	for mk := range m {
+		lmk := strings.ToLower(mk)
+		if lmk == lk {
+			return mk
+		}
+	}
+	return ""
+}
+
+func castToStringInterface(
+	src map[any]any,
+) map[string]any {
+	tgt := map[string]any{}
+	for k, v := range src {
+		tgt[fmt.Sprintf("%v", k)] = v
+	}
+	return tgt
+}
+
+func castMapStringSliceToMapInterface(src map[string][]string) map[string]any {
+	tgt := map[string]any{}
+	for k, v := range src {
+		tgt[k] = v
+	}
+	return tgt
+}
+
+func castMapStringToMapInterface(src map[string]string) map[string]any {
+	tgt := map[string]any{}
+	for k, v := range src {
+		tgt[k] = v
+	}
+	return tgt
+}
+
+func castMapFlagToMapInterface(src map[string]FlagValue) map[string]any {
+	tgt := map[string]any{}
+	for k, v := range src {
+		tgt[k] = v
+	}
+	return tgt
+}
 
 
