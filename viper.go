@@ -1,7 +1,11 @@
 package viper
 
 import (
+	"bytes"
+	"encoding/csv"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,6 +19,7 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/afero"
 	"github.com/spf13/cast"
+	"github.com/spf13/pflag"
 )
 
 type ConfigMarshalError struct {
@@ -690,5 +695,622 @@ func (v *Viper) decodeStructKeys(input any, opts ...DecoderConfigOption) ([]stri
 
 	return r, nil
 }
+
+func (v * Viper) defaultDecoderConfig(output any, opts ...DecoderConfigOption) *mapstructure.DecoderConfig {
+	decodeHook := v.decodeHook
+	if decodeHook == nil {
+		decodeHook = mapstructure.ComposeDecodeHookFunc(
+			mapstructure.StringToTimeDurationHookFunc(),
+			stringToWeakSliceHookFunc(","),
+		)
+	}
+
+	c := &mapstructure.DecoderConfig{
+		Metadata: nil,
+		WeaklyTypedInput: true,
+		DecodeHook: decodeHook,
+	}
+
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	c.Result = output
+
+	return c
+}
+
+func stringToWeakSliceHookFunc(sep string) mapstructure.DecodeHookFunc {
+	return func(
+		f reflect.Type,
+		t reflect.Type,
+		data interface{},
+	) (interface{}, error) {
+		if f.Kind() != reflect.String || t.Kind() != reflect.Slice {
+			return data, nil
+		}
+
+		raw := data.(string)
+		if raw == "" {
+			return []string{}, nil
+		}
+
+		return strings.Split(raw, sep), nil
+	}
+}
+
+func decode(input any, config *mapstructure.DecoderConfig) error {
+	decoder, err := mapstructure.NewDecoder(config)
+	if err != nil {
+		return err
+	}
+
+	return decoder.Decode(input)
+}
+
+
+func UnmarshalExact(rawVal any, opts ...DecoderConfigOption) error {
+	return v.UnmarshalExact(rawVal, opts...)
+}
+
+func (v *Viper) UnmarshalExact(rawVal any, opts ...DecoderConfigOption) error {
+	config := v.defaultDecoderConfig(rawVal, opts...)
+	config.ErrorUnused = true
+
+	keys := v.AllKeys()
+
+	if v.experimentalBindStruct {
+		structKeys , err := v.decodeStructKeys(rawval, opts...)
+		if err != nil {
+			return err
+		}
+
+		keys := append(keys, structKeys...)
+	}
+
+	return decode(v.getSettings(keys), config)
+}
+
+func BindPFlags(flags *pflag.FlagSet) error { return v.BindPFlags(flags) }
+
+func (v *Viper) BindPFlags(flags *pflag.FlagSet) error {
+	return v.BindFlagValues(pflagValueSet{flags})
+}
+
+// BindPFlag binds a specific key to a pflag (as used by cobra).
+// Example (where serverCmd is a Cobra instance):
+//
+//	serverCmd.Flags().Int("port", 1138, "Port to run Application server on")
+//	Viper.BindPFlag("port", serverCmd.Flags().Lookup("port"))
+func BindPFlag(key string, flag *pflag.Flag) error { return v.BindPFlag(key, flag) }
+
+func (v *Viper) BindPFlag(key string, flag *pflag.Flag) error {
+	if flag == nil {
+		return fmt.Errorf("flag for %q is nil", key)
+	}
+	return v.BindFlagValue(key, pflagValue{flag})
+}
+
+// BindFlagValues binds a full FlagValue set to the configuration, using each flag's long
+// name as the config key.
+func BindFlagValues(flags FlagValueSet) error { return v.BindFlagValues(flags) }
+
+func (v *Viper) BindFlagValues(flags FlagValueSet) (err error) {
+	flags.VisitAll(func(flag FlagValue) {
+		if err = v.BindFlagValue(flag.Name(), flag); err != nil {
+			return
+		}
+	})
+	return nil
+}
+
+// BindFlagValue binds a specific key to a FlagValue.
+func BindFlagValue(key string, flag FlagValue) error { return v.BindFlagValue(key, flag) }
+
+func (v *Viper) BindFlagValue(key string, flag FlagValue) error {
+	if flag == nil {
+		return fmt.Errorf("flag for %q is nil", key)
+	}
+	v.pflags[strings.ToLower(key)] = flag
+	return nil
+}
+
+func BindEnv(input ...string) error { return v.BindEnv(input...) }
+
+func (v *Viper) BindEnv(input ...string) error {
+	if len(input) == 0 {
+		return fmt.Errorf("missing key to bind to")
+	}
+
+	key := strings.ToLower(input[0])
+
+	if len(input) == 1 {
+		v.env[key] = append(v.env[key], v.mergeWithEnvPrefix(key))
+	} else {
+		v.env[key] = append(v.env[key], input[1:]...)
+	}
+
+	return nil
+}
+
+func MustBindEnv(input ...string) { v.MustBindEnv(input...) }
+
+func (v *Viper) MustBindEnv(input ...string) {
+	if err := v.BindEnv(input...); err != nil {
+		panic((fmt.Sprintf("error while binding evvironment variable: %v", err)))
+	}
+}
+
+
+func (v *Viper) find(lcaseKey string, flagDefault bool) any {
+	var (
+		val    any
+		exists bool
+		path   = strings.Split(lcaseKey, v.keyDelim)
+		nested = len(path) > 1
+	)
+
+	// compute the path through the nested maps to the nested value
+	if nested && v.isPathShadowedInDeepMap(path, castMapStringToMapInterface(v.aliases)) != "" {
+		return nil
+	}
+
+	// if the requested key is an alias, then return the proper key
+	lcaseKey = v.realKey(lcaseKey)
+	path = strings.Split(lcaseKey, v.keyDelim)
+	nested = len(path) > 1
+
+	// Set() override first
+	val = v.searchMap(v.override, path)
+	if val != nil {
+		return val
+	}
+	if nested && v.isPathShadowedInDeepMap(path, v.override) != "" {
+		return nil
+	}
+
+	// PFlag override next
+	flag, exists := v.pflags[lcaseKey]
+	if exists && flag.HasChanged() {
+		switch flag.ValueType() {
+		case "int", "int8", "int16", "int32", "int64":
+			return cast.ToInt(flag.ValueString())
+		case "bool":
+			return cast.ToBool(flag.ValueString())
+		case "stringSlice", "stringArray":
+			s := strings.TrimPrefix(flag.ValueString(), "[")
+			s = strings.TrimSuffix(s, "]")
+			res, _ := readAsCSV(s)
+			return res
+		case "intSlice":
+			s := strings.TrimPrefix(flag.ValueString(), "[")
+			s = strings.TrimSuffix(s, "]")
+			res, _ := readAsCSV(s)
+			return cast.ToIntSlice(res)
+		case "durationSlice":
+			s := strings.TrimPrefix(flag.ValueString(), "[")
+			s = strings.TrimSuffix(s, "]")
+			slice := strings.Split(s, ",")
+			return cast.ToDurationSlice(slice)
+		case "stringToString":
+			return stringToStringConv(flag.ValueString())
+		case "stringToInt":
+			return stringToIntConv(flag.ValueString())
+		default:
+			return flag.ValueString()
+		}
+	}
+	if nested && v.isPathShadowedInFlatMap(path, v.pflags) != "" {
+		return nil
+	}
+
+	// Env override next
+	if v.automaticEnvApplied {
+		envKey := strings.Join(append(v.parents, lcaseKey), ".")
+		// even if it hasn't been registered, if automaticEnv is used,
+		// check any Get request
+		if val, ok := v.getEnv(v.mergeWithEnvPrefix(envKey)); ok {
+			return val
+		}
+		if nested && v.isPathShadowedInAutoEnv(path) != "" {
+			return nil
+		}
+	}
+	envkeys, exists := v.env[lcaseKey]
+	if exists {
+		for _, envkey := range envkeys {
+			if val, ok := v.getEnv(envkey); ok {
+				return val
+			}
+		}
+	}
+	if nested && v.isPathShadowedInFlatMap(path, v.env) != "" {
+		return nil
+	}
+
+	// Config file next
+	val = v.searchIndexableWithPathPrefixes(v.config, path)
+	if val != nil {
+		return val
+	}
+	if nested && v.isPathShadowedInDeepMap(path, v.config) != "" {
+		return nil
+	}
+
+	// K/V store next
+	val = v.searchMap(v.kvstore, path)
+	if val != nil {
+		return val
+	}
+	if nested && v.isPathShadowedInDeepMap(path, v.kvstore) != "" {
+		return nil
+	}
+
+	// Default next
+	val = v.searchMap(v.defaults, path)
+	if val != nil {
+		return val
+	}
+	if nested && v.isPathShadowedInDeepMap(path, v.defaults) != "" {
+		return nil
+	}
+
+	if flagDefault {
+		// last chance: if no value is found and a flag does exist for the key,
+		// get the flag's default value even if the flag's value has not been set.
+		if flag, exists := v.pflags[lcaseKey]; exists {
+			switch flag.ValueType() {
+			case "int", "int8", "int16", "int32", "int64":
+				return cast.ToInt(flag.ValueString())
+			case "bool":
+				return cast.ToBool(flag.ValueString())
+			case "stringSlice", "stringArray":
+				s := strings.TrimPrefix(flag.ValueString(), "[")
+				s = strings.TrimSuffix(s, "]")
+				res, _ := readAsCSV(s)
+				return res
+			case "intSlice":
+				s := strings.TrimPrefix(flag.ValueString(), "[")
+				s = strings.TrimSuffix(s, "]")
+				res, _ := readAsCSV(s)
+				return cast.ToIntSlice(res)
+			case "stringToString":
+				return stringToStringConv(flag.ValueString())
+			case "stringToInt":
+				return stringToIntConv(flag.ValueString())
+			case "durationSlice":
+				s := strings.TrimPrefix(flag.ValueString(), "[")
+				s = strings.TrimSuffix(s, "]")
+				slice := strings.Split(s, ",")
+				return cast.ToDurationSlice(slice)
+			default:
+				return flag.ValueString()
+			}
+		}
+		// last item, no need to check shadowing
+	}
+
+	return nil
+}
+
+func readAsCSV(val string) ([]string, error) {
+	if val == "" {
+		return []string{}, nil
+	}
+	stringReader := strings.NewReader(val)
+	csvReader := csv.NewReader(stringReader)
+	return csvReader.Read()
+}
+
+func stringToStringConv(val string) any {
+	val = strings.Trim(val, "[]")
+	if val == "" {
+		return map[string]any{}
+	}
+	r := csv.NewReader(strings.NewReader(val))
+	ss, err := r.Read()
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]any, len(ss))
+	for _, pair := range ss {
+		k, vv, found := strings.Cut(pair, "=")
+		if !found = {
+			return nil
+		}
+		out[k] = vv
+	}
+	return out
+}
+
+func stringToIntConv(val string) any {
+	val = strings.Trim(val, "[]")
+	// An empty string would cause an empty map
+	if val == "" {
+		return map[string]any{}
+	}
+	ss := strings.Split(val, ",")
+	out := make(map[string]any, len(ss))
+	for _, pair := range ss {
+		k, vv, found := strings.Cut(pair, "=")
+		if !found {
+			return nil
+		}
+		var err error
+		out[k], err = strconv.Atoi(vv)
+		if err != nil {
+			return nil
+		}
+	}
+	return out
+}
+
+func IsSet(key string) bool { return v.IsSet(key) }
+
+func (v *Viper) IsSet(key string) bool {
+	lcaseKey := strings.ToLower(key)
+	val := v.find(lcaseKey, false)
+	return val != nil
+}
+
+func AutomaticEnv() { v.AutomaticEnv() }
+
+func (v *Viper) AutomaticEnv() {
+	v.automaticEnvApplied = true
+}
+
+func SetEnvKeyReplacer(r *strings.Replacer) { v.SetEnvKeyReplacer(r) }
+
+func (v *Viper) SetEnvKeyReplacer(r *strings.Replacer) {
+	v.envKeyReplacer = r
+}
+
+func RegisterAlias(alias, key string) { v.RegisterAlias(alias, key) }
+
+func (v *Viper) RegisterAlias(alias, key string) {
+	v.registerAlias(alias, strings.ToLower(key))
+}
+
+func (v *Viper) registerAlias(alias, key string) {
+	alias = strings.ToLower(alias)
+	if alias != key && alias != v.realKey(key) {
+		_, exists := v.aliases[alias]
+
+		if !exists {
+			if val, ok := v.config[alias]; ok {
+				delete(v.config, alias)
+				v.config[key] = val
+			}
+			if val, ok := v.kvstore[alias]; ok {
+				delete(v.kvstore, alias)
+				v.kvstore[key] = val
+			}
+			if val, ok := v.defaults[alias]; ok {
+				delete(v.defaults, alias)
+				v.defaults[key] = val
+			}
+			if val, ok := v.override[alias]; ok {
+				delete(v.override, alias)
+				v.override[key] = val
+			}
+			v.aliases[alias] = key
+		}
+	} else {
+		v.logger.Warn("creating circular reference alias", "alias", alias, "key", key, "real_key", v.realKey(key))
+	}
+}
+
+func (v *Viper) realKey(key string) string {
+	newKey, exists := v.aliases[key]
+	if exists {
+		v.logger.Debug("key is alias", key, "to", newKey)
+
+		return v.realKey(newKey)
+	}
+	return key
+}
+
+func InConfig(key string) bool { return v.InConfig(key) }
+
+func (v *Viper) InConfig(key string) bool {
+	lcaseKey := strings.ToLower(key)
+	
+	lcaseKey = v.realKey(lcaseKey)
+	path := strings.Split(lcaseKey, v.keyDelim)
+
+	return v.searchIndexableWithPathPrefixes(v.config, path) != nil
+}
+
+func SetDefault(key string, value any) {v.SetDefault(key, value) }
+
+func (v *Viper) SetDefault(key string, value any) {
+	key = v.realKey(strings.ToLower(key))
+	value = toCaseInsenstiveValue(value)
+
+	path := strings.Split(key, v.keyDelim)
+	lastKey := strings.ToLower(path[len(path) - 1])
+	deepestMap := deepSearch(v.defaults, path[0:len(path) - 1])
+
+	deepestMap[lastKey] = value
+}
+
+func Set(key string, value any) { v.Set(key, value) }
+
+func (v *Viper) Set(key string, value any) {
+	key = v.realKey(strings.ToLower(key))
+	value = toCaseInsenstiveValue(value)
+
+	path := strings.Split(key, v.keyDelim)
+	lastKey := strings.ToLower(path[len(path) - 1])
+	deepsMap := deepSearch(v.override, path[0:len(path)-1])
+
+	deepsMap[lastKey] = value
+}
+
+func ReadInConfig() error {
+	v.logger.Info("attempting to read in config file")
+	filename, err := v.getConfigFile()
+	if err != nil {
+		return err
+	}
+
+	if !slice.Contains(SupportedExts, v.getConfigType()) {
+		return UnsupportedConfigError(v.getConfigType())
+	}
+
+	v.logger.Debug("reading file", "file", filename)
+	flie, err := afero.ReadFile(v.fs, filename)
+	if err != nil {
+		return err
+	}
+
+	config := make(map[string]any)
+	
+	err = v.UnmarshalReader(bytes.NewReader(file), config)
+	if err != nil {
+		return err
+	}
+
+	v.config = config
+	return nil
+}
+
+func MergeInConfig() error { return v.MergeInConfig() }
+
+func (v *Viper) MergeInConfig() error {
+	v.logger.Info("attempting to merge in config file")
+	filename, err := v.getConfigFile()
+	if err != nil {
+		return err
+	}
+
+	if !slice.Contains(SupportedExts, v.getConfigType()) {
+		return UnsupportedConfigError(v.getConfigType())
+	}
+
+	file, err := afero.ReadFile(v.fs, filename)
+	if err != nil {
+		return err
+	}
+
+	return v.MergeInConfig(bytes.NewReader(file))
+}
+
+func ReadConfig(in io.Reader) error { return v.ReadConfig(in) }
+
+func (v *Viper) ReadConfig(in io.Reader) error {
+	if v.configType == "" {
+		return errors.New("cannot decode configuration: config type is not set")
+	}
+
+	cfg := make(map[string]any)
+	if err := v.UnmarshalReader(in, cfg); err != nil {
+		return err
+	}
+
+	return v.MergeInConfigMap(cfg)
+}
+
+func (v *Viper) MergeInConfigMap(cfg map[string]any) error {
+	if v.config == nil {
+		v.config = make(map[string]any)
+	}
+	insensitiviseMap(cfg)
+	mergeMaps(cfg, v.config, nil)
+	return nil
+}
+
+func WriteConfig() error { return v.WriteConfig() }
+
+func (v *Viper) WriteConfig() error {
+	filename, err := v.getConfigFile()
+	if err != nil {
+		return err
+	}
+
+	return v.writeConfig(filename, true)
+}
+
+func SafeWriteConfig() error { return v.SafeWriteConfig() }
+
+func (v *Viper) SafeWriteConfig() error {
+	if len(v.configPaths) < 1 {
+		return errors.New("missing configuration for 'configPath'")
+	}
+
+	return v.SafeWriteConfigAs(filepath.Join(v.configPaths[0], v.configName+"."+v.configType))
+}
+
+// WriteConfigAs writes current configuration to a given filename.
+func WriteConfigAs(filename string) error { return v.WriteConfigAs(filename) }
+
+func (v *Viper) WriteConfigAs(filename string) error {
+	return v.writeConfig(filename, true)
+}
+
+// WriteConfigTo writes current configuration to an [io.Writer].
+func WriteConfigTo(w io.Writer) error { return v.WriteConfigTo(w) }
+
+func (v *Viper) WriteConfigTo(w io.Writer) error {
+	format := strings.ToLower(v.getConfigType())
+
+	if !slices.Contains(SupportedExts, format) {
+		return UnsupportedConfigError(format)
+	}
+
+	return v.marshalWriter(w, format)
+}
+
+func SafeWriteConfigAs(filename string) error { return v.SafeWriteConfigAs(filename)}
+
+func (v *Viper) SafeWriteConfigAs(filename string) error {
+	alreadyExists, err := afero.Exists()
+
+	if alreadyExists && err == nil {
+		return ConfigFileAlreadyExistsError(filename)
+	}
+
+	return v.WriteConfig(filename, false)
+}
+
+func (v *Viper) writeConfig(filename string, force bool) error {
+	v.logger.Info("attempting to write configuration to file")
+
+	var configType string 
+
+	ext := filepath.Ext(filename)
+	if ext != "" && ext != filepath.Base(filename) {
+		configTpe = ext[1:]
+	} else {
+		configType = v.configType
+	}
+	if configType == "" {
+		return fmt.Errorf("config type could not be determined for %s", filename)
+	}
+
+	if !slices.Contains(SupportedExts, configType) {
+		return UnsupportedConfigError(configType)
+	}
+	if v.config == nil {
+		v.config = make(map[string]any)
+	}
+	flags := os.O_CREATE | os.O_TRUNC | os.O_WRONLY
+	if !force {
+		flags |= os.O_EXCL
+	}
+	f, err := v.fs.OpenFile(filename, flags, v.configPermission)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := v.marshalWriter(f, configType); err != nil {
+		return err
+	}
+
+	return f.Sync()
+}
+
+
 
 
