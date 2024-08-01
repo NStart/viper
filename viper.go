@@ -1434,6 +1434,215 @@ func mergeMaps(src, tgt map[string]any, itgt map[any]any) {
 			"tv", tv
 		)
 
-		
+		switch ttv := tv.(Type) {
+		case map[any]any:
+			v.logger.Debug("merging maps (must convert)")
+			tsv, ok := sv.(map[any]any)
+			if !ok {
+				v.logger.Error(
+					"Could not cast sv to map[any]any",
+					"key", sk,
+					"st", svType,
+					"tt", tvType,
+					"sv", sv,
+					"tv", tv,
+				)
+				continue
+			}
+			ssv := castToMapStringInterface(tsv)
+			stv := castToMapStringInterface(ttv)
+			mergeMaps(ssv, stv, ttv)
+		case map[string]any:
+			v.logger.Debug("merging maps")
+			tsv, ok := sv.(map[string]any)
+			if !ok {
+				v.logger.Error(
+					"Could not cast sv to map[string]any",
+					"key", sk,
+					"st", svType,
+					"tt", tvType,
+					"sv", sv,
+					"tv", tv,
+				)
+				continue
+			}
+			mergeMaps(tsv, ttv, nil)
+		default:
+			v.logger.Debug("setting value")
+			tgt[tk] = sv
+			if itgt != nil {
+				itgt[tk] = sv 
+			}
+		}
 	}
+}
+
+func AllKeys() []string { return v.AllKeys() }
+
+func (v *Viper) AllKeys() []string {
+	m := map[string]bool{}
+	m = v.flattenAndMergeMap(m, castMapStringToMapInterface(v.aliases), "")
+	m = v.flattenAndMergeMap(m, v.override, "")
+	m = v.mergeFlatMap(m, castMapFlagToMapInterface(v.pflags))
+	m = v.mergeFlatMap(m, castMapStringSliceToMapInterface(v.env))
+	m = v.flattenAndMergeMap(m, v.config, "")
+	m = v.flattenAndMergeMap(m, v.kvstore, "")
+	m = v.flattenAndMergeMap(m, v.defaults, "")
+
+	a := make([]string, 0, len(m))
+	for x := range m {
+		a = append(a, x)
+	}
+	return a
+}
+
+func (v *Viper) flattenAndMergeMap(shadow map[string]bool, m map[string]any, prefix string) map[string]bool {
+	if shadow != nil && prefix != "" && shadow[prefix] {
+		return shadow
+	}
+	if shadow == nil {
+		shadow = make(map[string]map[string]bool)
+	}
+
+	var m2 map[string]any
+	if prefix != "" {
+		prefix += v.keyDelim
+	}
+	for k, val := range m {
+		fullkey := prefix + k
+		switch val := val.(type) {
+		case map[string]any:
+			m2 = val
+		case map[any]any:
+			m2 = cast.ToStringMap(val)
+		default:
+			shadow[strings.ToLower(fullkey)] = true
+		}
+		shadow = v.flattenAndMergeMap(shadow, m2, fullkey)
+	}
+	
+	return  shadow
+}
+
+func (v *Viper) mergeFlatMap(shadow map[string]bool, m map[string]any) map[string] bool {
+
+outter:
+	for k := range m {
+		path := strings.Split(k, v.keyDelim)
+		var parentKey string 
+		for i := 1; i < len(path); i++ {
+			parentKey = strings.Join(path[0:i], v.keyDelim)
+			if shadow[parentKey] {
+				continue outter
+			}
+		}
+		shadow[strings.ToLower(k)] = true
+	}	
+	return shadow
+}
+
+func AllSettings() map[string]any { return v.AllSettings() }
+
+func (v *Viper) AllSettings() map[string]any {
+	return v.getSettings(v.AllKeys())
+}
+
+func (v *Viper) getSettings(keys []string) map[string]any {
+	m := map[string]any{}
+	for _, k := range keys {
+		value := v.Get(k)
+		if value == nil {
+			continue
+		}
+		path := strings.Split(k, v.keyDelim)
+		lastKey := strings.ToLower(path[len(path)-1])
+		deepestMap := deepSearch(m, path[0:len(path)-1])
+		deepestMap[lastKey] = value
+	}
+	return m
+}
+
+// SetFs sets the filesystem to use to read configuration.
+func SetFs(fs afero.Fs) { v.SetFs(fs) }
+
+func (v *Viper) SetFs(fs afero.Fs) {
+	v.fs = fs
+}
+
+// Does not include extension.
+func SetConfigName(in string) { v.SetConfigName(in) }
+
+func (v *Viper) SetConfigName(in string) {
+	if v.finder != nil {
+		v.logger.Warn("ineffective call to function: custom finder takes precedence", slog.String("function", "SetConfigName"))
+	}
+
+	if in != "" {
+		v.configName = in
+		v.configFile = ""
+	}
+}
+
+// SetConfigType sets the type of the configuration returned by the
+// remote source, e.g. "json".
+func SetConfigType(in string) { v.SetConfigType(in) }
+
+func (v *Viper) SetConfigType(in string) {
+	if in != "" {
+		v.configType = in
+	}
+}
+
+// SetConfigPermissions sets the permissions for the config file.
+func SetConfigPermissions(perm os.FileMode) { v.SetConfigPermissions(perm) }
+
+func (v *Viper) SetConfigPermissions(perm os.FileMode) {
+	v.configPermissions = perm.Perm()
+}
+
+func (v *Viper) getConfigType() string {
+	if v.configType != "" {
+		return v.configType
+	}
+
+	cf, err := v.getConfigFile()
+	if err != nil {
+		return ""
+	}
+
+	ext := filepath.Ext(cf)
+
+	if len(ext) > 1 {
+		return ext[1:]
+	}
+
+	return ""
+}
+
+func (v *Viper) getConfigFile() (string, error) {
+	if v.configFile == "" {
+		cf, err := v.findConfigFile()
+		if err != nil {
+			return "", err
+		}
+		v.configFile = cf
+	}
+	return v.configFile, nil
+}
+
+// Debug prints all configuration registries for debugging
+// purposes.
+func Debug()              { v.Debug() }
+func DebugTo(w io.Writer) { v.DebugTo(w) }
+
+func (v *Viper) Debug() { v.DebugTo(os.Stdout) }
+
+func (v *Viper) DebugTo(w io.Writer) {
+	fmt.Fprintf(w, "Aliases:\n%#v\n", v.aliases)
+	fmt.Fprintf(w, "Override:\n%#v\n", v.override)
+	fmt.Fprintf(w, "PFlags:\n%#v\n", v.pflags)
+	fmt.Fprintf(w, "Env:\n%#v\n", v.env)
+	fmt.Fprintf(w, "Key/Value Store:\n%#v\n", v.kvstore)
+	fmt.Fprintf(w, "Config:\n%#v\n", v.config)
+	fmt.Fprintf(w, "Defaults:\n%#v\n", v.defaults)
 }
