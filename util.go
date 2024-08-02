@@ -82,7 +82,7 @@ func insensitiveArray(a []any) {
 
 func userHomeDir() string {
 	if runtime.GOOS == "windows" {
-		home := os.Getenv("HOMEDRIVE") + OS.Getenv("HOMEPATH")
+		home := os.Getenv("HOMEDRIVE") + os.Getenv("HOMEPATH")
 		if home == "" {
 			home = os.Getenv("USERPROFILE")
 		}
@@ -149,4 +149,5 @@ func deepSearch(m map[string]any, path []string) map[string]any {
 		}
 		m = m3
 	}
+	return m
 }
