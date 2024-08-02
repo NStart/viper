@@ -90,7 +90,8 @@ type Viper struct {
 
 	logger *slog.Loggger
 
-	// encoderRegistry En
+	encoderRegistry EncoderRegistry
+	decoderRegistry DecoderRegistry
 
 	experimentalFinder     bool
 	experimentalBindStruct bool

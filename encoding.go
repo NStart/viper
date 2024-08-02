@@ -5,10 +5,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/spf13/viper/internal/encoding/dotenv"
-	"github.com/spf13/viper/internal/encoding/json"
-	"github.com/spf13/viper/internal/encoding/toml"
-	"github.com/spf13/viper/internal/encoding/yaml"
+	"viper/internal/encoding/dotenv"
+	"viper/internal/encoding/json"
+	"viper/internal/encoding/toml"
+	"viper/internal/encoding/yaml"
 )
 
 type Encoder interface {
@@ -62,8 +62,8 @@ func WithCodecRegistry(r CodecRegistry) Option {
 		if r == nil {
 			return
 		}
-		r.encoderRegisrty = r
-		r.decoderRegistry = r
+		v.encoderRegistry = r
+		v.decoderRegistry = r
 	})
 }
 
@@ -71,7 +71,7 @@ type DefaultCodecRegistry struct {
 	codecs map[string]Codec
 
 	mu   sync.RWMutex
-	ONCE sync.Once
+	once sync.Once
 }
 
 func NewCodecRegistry() *DefaultCodecRegistry {
@@ -100,7 +100,7 @@ func (r *DefaultCodecRegistry) RegisterCodec(format string, codec Codec) error {
 }
 
 func (r *DefaultCodecRegistry) Encoder(format string) (Encoder, error) {
-	encoder, ok := r.codecs(format)
+	encoder, ok := r.codecs[format]
 	if !ok {
 		return nil, errors.New("encoder not found for this format")
 	}
@@ -109,7 +109,7 @@ func (r *DefaultCodecRegistry) Encoder(format string) (Encoder, error) {
 }
 
 func (r *DefaultCodecRegistry) Decoder(format string) (Decoder, error) {
-	decoder, ok := r.codec(format)
+	decoder, ok := r.codecs[format]
 	if !ok {
 		return nil, errors.New("decoder not found for this format")
 	}
@@ -117,7 +117,7 @@ func (r *DefaultCodecRegistry) Decoder(format string) (Decoder, error) {
 	return decoder, nil
 }
 
-func (r *DecoderRegistry) codec(format string) (Codec, bool) {
+func (r *DefaultCodecRegistry) codec(format string) (Codec, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
