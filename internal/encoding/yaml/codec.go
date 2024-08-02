@@ -1,13 +1,13 @@
-package json
+package yaml
 
-import "encoding/json"
+import "gopkg.in/yaml.v3"
 
 type Codec struct{}
 
 func (Codec) Encode(v map[string]any) ([]byte, error) {
-	return json.MarshalIndent(v, "", "  ")
+	return yaml.Marshal(v)
 }
 
 func (Codec) Decode(b []byte, v map[string]any) error {
-	return json.Unmarshal(b, &v)
+	return yaml.Unmarshal(b, &b)
 }

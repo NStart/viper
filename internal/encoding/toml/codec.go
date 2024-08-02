@@ -1,13 +1,15 @@
-package json
+package toml
 
-import "encoding/json"
+import (
+	"github.com/pelletier/go-toml/v2"
+)
 
 type Codec struct{}
 
 func (Codec) Encode(v map[string]any) ([]byte, error) {
-	return json.MarshalIndent(v, "", "  ")
+	return toml.Marshal(v)
 }
 
 func (Codec) Decode(b []byte, v map[string]any) error {
-	return json.Unmarshal(b, &v)
+	return toml.Unmarshal(b, &v)
 }
