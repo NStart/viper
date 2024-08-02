@@ -12,7 +12,7 @@ import (
 )
 
 type Encoder interface {
-	Encoder(v map[string]any) ([]byte, error)
+	Encode(v map[string]any) ([]byte, error)
 }
 
 type Decoder interface {
