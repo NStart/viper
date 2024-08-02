@@ -46,7 +46,7 @@ type defaultRemoteProvider struct {
 	secretKeying string
 }
 
-func (rp defaultRemoteProvider) Provider() string {
+func (rp defaultRemoteProvider) Provide() string {
 	return rp.provider
 }
 
@@ -172,7 +172,7 @@ func (v *Viper) getRemoteConfig(provider RemoteProvider) (map[string]any, error)
 }
 
 func (v *Viper) watchKeyValueConfigOnChannel() error {
-	if len(r.remoteProviders) == 0 {
+	if len(v.remoteProviders) == 0 {
 		return RemoteConfigError("No Remote Providers")
 	}
 
